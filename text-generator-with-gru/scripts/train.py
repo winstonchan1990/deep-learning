@@ -6,30 +6,68 @@ import time
 import datetime
 import math
 import numpy as np
+import argparse
 from utils import *
 
 ## Settings
 
-SEQLEN = 30
-BATCHSIZE = 100
-INTERNALSIZE = 512
-NLAYERS = 3
-learning_rate = 0.001  # fixed learning rate
-dropout_pkeep = 1.0    # no dropout
-textfilepath = 'data/wiki.test.raw'
+parser = argparse.ArgumentParser()
+trainingArgs = parser.add_argument_group('Training options')
+trainingArgs.add_argument('--seqLen',type=int,default=30,help='character length of each training sample')
+trainingArgs.add_argument('--batchSize',type=int,default=100,help='number of training samples in one batch')
+trainingArgs.add_argument('--internalSize',type=int,default=512,help='internal size of each GRU cell')
+trainingArgs.add_argument('--numLayers',type=int,default=3,help='number of GRU layers in the network')
+trainingArgs.add_argument('--learningRate',type=float,default=0.001,help='learning rate')
+trainingArgs.add_argument('--dropoutKeep',type=float,default=1.0,help='1-dropout rate')
+trainingArgs.add_argument('--numEpochs',type=int,default=100,help='number of epochs')
+globalArgs = parser.add_argument_group('Global options')
+globalArgs.add_argument('--textFilePath',type=str,default='data/wiki.test.raw',help='file path to input text data file')
+globalArgs.add_argument('--removeNonASCII',action='store_true',default=False,help='remove non-ASCII characters')
+ARGS = parser.parse_args()
+
+SEQLEN = ARGS.seqLen
+BATCHSIZE = ARGS.batchSize
+INTERNALSIZE = ARGS.internalSize
+NLAYERS = ARGS.numLayers
+learning_rate = ARGS.learningRate
+dropout_pkeep = ARGS.dropoutKeep
+numEpochs = ARGS.numEpochs
+textfilepath = ARGS.textFilePath 
 
 DISPLAY_FREQ = 50
 _50_BATCHES = DISPLAY_FREQ * BATCHSIZE * SEQLEN
 
+print('\n[Settings]\n')
+print('Sequence length : {}'.format(SEQLEN))
+print('Batch size : {}'.format(BATCHSIZE))
+print('Internal size : {}'.format(INTERNALSIZE))
+print('Number of layers : {}'.format(NLAYERS))
+print('Learning rate : {}'.format(learning_rate))
+print('Dropout Keep rate : {}'.format(dropout_pkeep))
+print('Number of epochs : {}'.format(numEpochs))
+print('Input data file : {}'.format(textfilepath))
+print('\n[End Settings]\n')
+
+
 ## Load raw text
 with timer('Loading raw text file'):
+    assert os.path.exists(textfilepath), 'Input text file does not exist.'
     text = load_text(textfilepath,encoding='utf-8')
+
+## Remove non-ASCII characters (optional)
+if ARGS.removeNonASCII:
+    with timer('Removing non-ASCII characters'):
+        usable_char_idx = [i for i in range(0,127,1)]
+        text = ''.join([t for t in text if ord(t) in usable_char_idx])
 
 ## Generate character indices mapping and encode text
 with timer('Generating char indices'):
     char2id, id2char, num_chars = generate_char_indices(text)
     encoded_text = encode_text(text,char2id)
     print('Number of characters : {}'.format(num_chars))
+    print('Characters:\n')
+    for i,c in id2char.items():
+        print(i,c.encode('utf-8'))
     print('First 1000 entries of encoded text : {}'.format(encoded_text[:1000]))
 
 ## Define epoch size
@@ -57,11 +95,6 @@ with graph.as_default():
     Hin = tf.placeholder(tf.float32, [None, INTERNALSIZE*NLAYERS], name='Hin') 
 
     # NLAYERS of GRU cells
-
-    # onecell = rnn.GRUCell(INTERNALSIZE)
-    # dropcell = rnn.DropoutWrapper(onecell, input_keep_prob=pkeep)
-    # multicell = rnn.MultiRNNCell([dropcell]*NLAYERS, state_is_tuple=False)
-
     def build_gru_cell():
         onecell = rnn.GRUCell(INTERNALSIZE)
         dropcell = rnn.DropoutWrapper(onecell, input_keep_prob=pkeep)
@@ -121,7 +154,7 @@ with tf.Session(graph=graph) as sess:
     
 
     # training loop
-    for x, y_, epoch in batch_sequencer(encoded_text, BATCHSIZE, SEQLEN, num_epochs=1000):
+    for x, y_, epoch in batch_sequencer(encoded_text, BATCHSIZE, SEQLEN, num_epochs=numEpochs):
 
         # train on one minibatch
         feed_dict = {
@@ -163,19 +196,22 @@ with tf.Session(graph=graph) as sess:
 
         # display a short text generated with the current weights and biases (every 150 batches)
         if step // 3 % _50_BATCHES == 0:
-            print('Generating random text from learned state : ')
+            print('[Generating random text from learned state]')
             print()
             rand_char_idx = np.random.choice(num_chars)
 
             ry = np.array([[rand_char_idx]])
             rh = np.zeros([1, INTERNALSIZE * NLAYERS])
+            display_string = ''
             for k in range(1000):
                 ryo, rh = sess.run([Yo, H], feed_dict={X: ry, pkeep: 1.0, Hin: rh, batchsize: 1})
                 rc = sample_from_probabilities(ryo, topn=10 if epoch <= 1 else 2)
-                print(id2char[rc].encode('utf-8'), end='')
+                display_string += id2char[rc]
                 ry = np.array([[rc]])
             
-            print('Finished generating random text')
+            print(display_string.encode('utf-8'))
+            print()
+            print('[Finished generating random text]')
             print()
 
         # save a checkpoint (every 500 batches)
