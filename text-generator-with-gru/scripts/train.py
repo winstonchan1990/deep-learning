@@ -7,9 +7,12 @@ import datetime
 import math
 import numpy as np
 import argparse
+import json
 from utils import *
 
 ## Settings
+
+timestamp = str(math.trunc(time.time()))
 
 parser = argparse.ArgumentParser()
 trainingArgs = parser.add_argument_group('Training options')
@@ -21,7 +24,8 @@ trainingArgs.add_argument('--learningRate',type=float,default=0.001,help='learni
 trainingArgs.add_argument('--dropoutKeep',type=float,default=1.0,help='1-dropout rate')
 trainingArgs.add_argument('--numEpochs',type=int,default=100,help='number of epochs')
 globalArgs = parser.add_argument_group('Global options')
-globalArgs.add_argument('--textFilePath',type=str,default='data/wiki.test.raw',help='file path to input text data file')
+globalArgs.add_argument('--modelName',type=str,default='model_{}'.format(timestamp),help='unique model name')
+globalArgs.add_argument('--textFilePath',type=str,default='',help='file path to input text data file')
 globalArgs.add_argument('--removeNonASCII',action='store_true',default=False,help='remove non-ASCII characters')
 ARGS = parser.parse_args()
 
@@ -32,7 +36,12 @@ NLAYERS = ARGS.numLayers
 learning_rate = ARGS.learningRate
 dropout_pkeep = ARGS.dropoutKeep
 numEpochs = ARGS.numEpochs
+modelName = ARGS.modelName
 textfilepath = ARGS.textFilePath 
+
+assert len(textfilepath)>0,'Please input file path of input text data file'
+assert os.path.exists(textfilepath),'Please specify valid file path of input text data file'
+assert len(modelName)>0,'Please input name of model'
 
 DISPLAY_FREQ = 50
 _50_BATCHES = DISPLAY_FREQ * BATCHSIZE * SEQLEN
@@ -45,8 +54,18 @@ print('Number of layers : {}'.format(NLAYERS))
 print('Learning rate : {}'.format(learning_rate))
 print('Dropout Keep rate : {}'.format(dropout_pkeep))
 print('Number of epochs : {}'.format(numEpochs))
+print('Model name : {}'.format(modelName))
 print('Input data file : {}'.format(textfilepath))
 print('\n[End Settings]\n')
+
+if not os.path.exists('models'):
+    os.mkdir('models')
+    
+## Create sub-directory to store model output
+os.mkdir('models/{}'.format(modelName))
+os.mkdir('models/{}/chars'.format(modelName))
+os.mkdir('models/{}/checkpoints'.format(modelName))
+os.mkdir('models/{}/log'.format(modelName))
 
 
 ## Load raw text
@@ -57,18 +76,27 @@ with timer('Loading raw text file'):
 ## Remove non-ASCII characters (optional)
 if ARGS.removeNonASCII:
     with timer('Removing non-ASCII characters'):
-        usable_char_idx = [i for i in range(0,127,1)]
-        text = ''.join([t for t in text if ord(t) in usable_char_idx])
+        ascii_char_idx = [i for i in range(0,127,1)]
+        text = ''.join([t for t in text if ord(t) in ascii_char_idx])
 
 ## Generate character indices mapping and encode text
 with timer('Generating char indices'):
     char2id, id2char, num_chars = generate_char_indices(text)
     encoded_text = encode_text(text,char2id)
     print('Number of characters : {}'.format(num_chars))
+    print()
     print('Characters:\n')
     for i,c in id2char.items():
         print(i,c.encode('utf-8'))
+    print()
     print('First 1000 entries of encoded text : {}'.format(encoded_text[:1000]))
+
+## Save character indices in json files
+with timer('Saving char indices'):
+    with open('models/{}/chars/char2id.json'.format(modelName),'w') as f_char2id:
+        with open('models/{}/chars/id2char.json'.format(modelName),'w') as f_id2char:
+            json.dump(char2id,f_char2id)
+            json.dump(id2char,f_id2char)
 
 ## Define epoch size
 epoch_size = len(text) // (BATCHSIZE * SEQLEN)
@@ -78,6 +106,7 @@ print('Number of batches per epoch: {}'.format(epoch_size))
 print('Building computational graph')
 graph = tf.Graph()
 with graph.as_default():
+
     # Parameters
     lr = tf.placeholder(tf.float32, name='lr')  # learning rate
     pkeep = tf.placeholder(tf.float32, name='pkeep')  # dropout parameter
@@ -137,15 +166,10 @@ print('Model training')
 with tf.Session(graph=graph) as sess:
 
     # Init for Tensorboard
-    timestamp = str(math.trunc(time.time()))
-    summary_writer = tf.summary.FileWriter("log/" + timestamp + "-training")
-    validation_writer = tf.summary.FileWriter("log/" + timestamp + "-validation")
+    summary_writer = tf.summary.FileWriter('models/{}/log/training'.format(modelName))
 
     # Init for saving model
-    if not os.path.exists("checkpoints"):
-        os.mkdir("checkpoints")
     saver = tf.train.Saver(max_to_keep=1)
-
 
     # Initialize model
     istate = np.zeros([BATCHSIZE, INTERNALSIZE*NLAYERS])  # initial zero input state
@@ -217,10 +241,12 @@ with tf.Session(graph=graph) as sess:
         # save a checkpoint (every 500 batches)
         if step // 10 % _50_BATCHES == 0:
             with timer('Saving checkpoint'):
-                saver.save(sess, 'checkpoints/rnn_train_' + timestamp, global_step=step)
+                saver.save(
+                    sess, 
+                    'models/{}/checkpoints/train-step'.format(modelName), 
+                    global_step=step
+                )
 
         # loop state around
         istate = ostate
         step += BATCHSIZE * SEQLEN
-
-
