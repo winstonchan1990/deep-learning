@@ -7,6 +7,16 @@ python scripts/train.py \
 --textFilePath data/wiki.test.raw \
 --removeNonASCII
 
+#####################
+## Resume Training ##
+#####################
+
+python scripts/train.py \
+--modelName wiki_article_generator \
+--textFilePath data/wiki.test.raw \
+--removeNonASCII \
+--resumeTraining
+
 ####################################################
 ## Generate new wiki articles with text generator ##
 ####################################################

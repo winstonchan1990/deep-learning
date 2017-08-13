@@ -8,6 +8,8 @@ import math
 import numpy as np
 import argparse
 import json
+import pickle
+import glob
 from utils import *
 
 ## Settings
@@ -27,6 +29,7 @@ globalArgs = parser.add_argument_group('Global options')
 globalArgs.add_argument('--modelName',type=str,default='model_{}'.format(timestamp),help='unique model name')
 globalArgs.add_argument('--textFilePath',type=str,default='',help='file path to input text data file')
 globalArgs.add_argument('--removeNonASCII',action='store_true',default=False,help='remove non-ASCII characters')
+globalArgs.add_argument('--resumeTraining',action='store_true',default=False,help='resume training from a previously saved model')
 ARGS = parser.parse_args()
 
 SEQLEN = ARGS.seqLen
@@ -62,11 +65,12 @@ if not os.path.exists('models'):
     os.mkdir('models')
     
 ## Create sub-directory to store model output
-os.mkdir('models/{}'.format(modelName))
-os.mkdir('models/{}/chars'.format(modelName))
-os.mkdir('models/{}/checkpoints'.format(modelName))
-os.mkdir('models/{}/log'.format(modelName))
-
+if not os.path.exists('models/{}'.format(modelName)):
+    os.mkdir('models/{}'.format(modelName))
+    os.mkdir('models/{}/chars'.format(modelName))
+    os.mkdir('models/{}/train'.format(modelName))
+    os.mkdir('models/{}/checkpoints'.format(modelName))
+    os.mkdir('models/{}/log'.format(modelName))
 
 ## Load raw text
 with timer('Loading raw text file'):
@@ -102,7 +106,10 @@ with timer('Saving char indices'):
 epoch_size = len(text) // (BATCHSIZE * SEQLEN)
 print('Number of batches per epoch: {}'.format(epoch_size))
 
-## Build computational graph
+###############################
+## Build computational graph ##
+###############################
+
 print('Building computational graph')
 graph = tf.Graph()
 with graph.as_default():
@@ -114,11 +121,11 @@ with graph.as_default():
 
     # Inputs
     X = tf.placeholder(tf.uint8, [None, None], name='X')    
-    Xo = tf.one_hot(X, num_chars, 1.0, 0.0)
+    Xo = tf.one_hot(X, num_chars, 1.0, 0.0, name='Xo')
 
     # Outputs (expected)
     Y_ = tf.placeholder(tf.uint8, [None, None], name='Y_')  # [ BATCHSIZE, SEQLEN ]
-    Yo_ = tf.one_hot(Y_, num_chars, 1.0, 0.0)      
+    Yo_ = tf.one_hot(Y_, num_chars, 1.0, 0.0, name='Yo_')      
 
     # Hidden input state
     Hin = tf.placeholder(tf.float32, [None, INTERNALSIZE*NLAYERS], name='Hin') 
@@ -159,26 +166,61 @@ with graph.as_default():
     summaries = tf.summary.merge([loss_summary, acc_summary])
 
 
+###############
+## Run graph ##
+###############
 
-
-#initialize a session with a graph
 print('Model training')
 with tf.Session(graph=graph) as sess:
+    sess.run(tf.global_variables_initializer())
 
-    # Init for Tensorboard
+    ### Init for Tensorboard
     summary_writer = tf.summary.FileWriter('models/{}/log/training'.format(modelName))
 
-    # Init for saving model
-    saver = tf.train.Saver(max_to_keep=1)
+    ### If restoring from prev checkpoint
+    if ARGS.resumeTraining:
+        # Check if checkpoint directory exists
+        dir_checkpoints = 'models/{}/checkpoints/'.format(modelName)
+        assert os.path.exists(dir_checkpoints), 'Checkpoint directory not found'
+      
+        with timer('Restoring latest checkpoint'):
+            latest_checkpoint = tf.train.latest_checkpoint('models/{}/checkpoints'.format(modelName))
+            print(latest_checkpoint)
+            assert len(latest_checkpoint)>0,'No checkpoint file found'
+            saver = tf.train.Saver(max_to_keep=1)
+            saver.restore(sess, latest_checkpoint)
+            for var in tf.global_variables():
+                print(var)
 
-    # Initialize model
-    istate = np.zeros([BATCHSIZE, INTERNALSIZE*NLAYERS])  # initial zero input state
-    tf.global_variables_initializer().run()
-    step = 0
+        with timer('Restore initial input state as previous output state'):
+            istate = pickle.load(open('models/{}/train/ostate.pkl'.format(modelName),'rb'))
+            print('istate : {}'.format(istate)) 
+
+        with timer('Restore global step value'):
+            step = pickle.load(open('models/{}/train/step.pkl'.format(modelName),'rb'))
+            print('step : {}'.format(step))
+
+    ### If training from scratch
+    else:
+        # Init for saving model
+        saver = tf.train.Saver(max_to_keep=1)
+
+        # Initialize model
+        istate = np.zeros([BATCHSIZE, INTERNALSIZE*NLAYERS])  # initial zero input state
+        tf.global_variables_initializer().run()
+        step = 0
+
+    ### Batch iterator
+    batch_iterator = batch_sequencer(encoded_text, BATCHSIZE, SEQLEN, num_epochs=numEpochs)
+
+    ### Fast forwarding batch_sequencer to latest train step
+    iter_skip = step // (BATCHSIZE * SEQLEN)
+    with timer('Fast forwarding batch_sequencer to latest train step'):
+        for i in range(iter_skip):
+            next(batch_iterator)
     
-
-    # training loop
-    for x, y_, epoch in batch_sequencer(encoded_text, BATCHSIZE, SEQLEN, num_epochs=numEpochs):
+    ### Start training at last saved step
+    for x, y_, epoch in batch_iterator:
 
         # train on one minibatch
         feed_dict = {
@@ -238,15 +280,19 @@ with tf.Session(graph=graph) as sess:
             print('[Finished generating random text]')
             print()
 
+        # loop state around
+        istate = ostate
+        step += BATCHSIZE * SEQLEN
+
         # save a checkpoint (every 500 batches)
         if step // 10 % _50_BATCHES == 0:
+            with timer('Saving train variables'):
+                pickle.dump(ostate,open('models/{}/train/ostate.pkl'.format(modelName),'wb'))
+                pickle.dump(step,open('models/{}/train/step.pkl'.format(modelName),'wb'))
+
             with timer('Saving checkpoint'):
                 saver.save(
                     sess, 
                     'models/{}/checkpoints/train-step'.format(modelName), 
                     global_step=step
                 )
-
-        # loop state around
-        istate = ostate
-        step += BATCHSIZE * SEQLEN

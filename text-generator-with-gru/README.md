@@ -31,6 +31,7 @@ This directory contains basic template Python scripts to build a text generator 
   - `dropoutKeep` : 1 - dropout rate in training 
   - `numEpochs` : Number of epochs in training
   - `removeNonASCII` : Whether to remove non-ASCII characters from input text data
+  - `resumeTraining` : Resume training of a model from the most recent saved checkpoint
 
 ### 3. Text generation
 
